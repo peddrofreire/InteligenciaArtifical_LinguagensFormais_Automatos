@@ -1,0 +1,113 @@
+# Sistema especialista: conformidade de NF antes da liquidação
+
+Este sistema especialista confere uma nota fiscal antes de mandá-la para a liquidação, seguindo o fluxo da Conformidade de Registro e Gestão. Ele também ajuda a localizar processos já arquivados no SPED.
+
+Feito em Python 3.9+, sem bibliotecas externas.
+
+## 1. Domínio
+
+Quando uma NF chega, o conformador segue estas etapas:
+
+| Etapa | O que é conferido | Se estiver errado |
+|---|---|---|
+| 1 | **Nota de empenho**: valor ou crédito (ver tabela abaixo) | Devolve ao gestor de contratos |
+| 2 | **NE escrita na NF**: tem que ser a mesma NE recebida (ex.: a NF cita NE120_2026, então a NE recebida tem que ser a NE120_2026) | Devolve ao gestor para referenciar a NE correta |
+| 3 | **Documentação da empresa** em dia | Devolve ao gestor |
+| 4 | Tudo certo: o **ordenador de despesas** assina, autorizando o pagamento | — |
+| 5 | Depois da assinatura, segue para a **liquidação** | — |
+| 6 | Depois de liquidada, a documentação é juntada e o processo é **arquivado** (do Trello para o SPED) com o padrão `NE120_2026` | — |
+
+| Tipo de empenho | Regra de conferência |
+|---|---|
+| **Ordinário** | O valor da NE tem que ser igual ao valor da NF |
+| **Global** | Tem que existir crédito disponível para o pagamento |
+
+| Busca de processo arquivado | Como funciona |
+|---|---|
+| 1ª tentativa | Pelo padrão `NE120_2026` |
+| 2ª tentativa | Pelo **nome da empresa**, mostrando o histórico para você ver o que aconteceu |
+
+## 2. Fatos primitivos (entradas do caso)
+
+| Fato | Calculado a partir de |
+|---|---|
+| `empenho_tipo_conhecido` | `tipo_empenho` é ordinário ou global |
+| `empenho_ordinario` | `tipo_empenho` é ordinário |
+| `empenho_global` | `tipo_empenho` é global |
+| `valor_nf_igual_ne` | `valor_ne` = `valor_nf` |
+| `saldo_suficiente` | `saldo_empenho` ≥ `valor_nf` |
+| `ne_referenciada_confere` | `ne_referenciada_na_nf` = `ne_recebida`, após normalizar (aceita NE120_2026, NE 120/2026 e 2026NE000120) |
+| `certidoes_em_dia` | todas as certidões exigidas válidas na `data_conferencia` |
+| `ordenador_assinou` | `ordenador_assinou` (s ou n) |
+| `nf_liquidada` | `nf_liquidada` (s ou n) |
+
+| Valor do fato | Significado |
+|---|---|
+| Verdadeiro | A condição foi confirmada pelos dados |
+| Falso | A condição foi negada pelos dados |
+| Desconhecido | Falta informação: o sistema pergunta (modo interativo) ou diz o que falta. "Não sei" nunca é tratado como "não" |
+
+## 3. Base de regras
+
+| Regra | SE | ENTÃO |
+|---|---|---|
+| R01 | não empenho_tipo_conhecido | fora_do_escopo → análise humana |
+| R02 | empenho_ordinario E valor_nf_igual_ne | empenho_conferido |
+| R03 | empenho_ordinario E não valor_nf_igual_ne | pendência: valor divergente |
+| R04 | empenho_global E saldo_suficiente | empenho_conferido |
+| R05 | empenho_global E não saldo_suficiente | pendência: sem crédito |
+| R06 | ne_referenciada_confere | referencia_conferida |
+| R07 | não ne_referenciada_confere | pendência: NE incorreta |
+| R08 | certidoes_em_dia | documentacao_conferida |
+| R09 | não certidoes_em_dia | pendência: documentação |
+| R10 | empenho_conferido E referencia_conferida E documentacao_conferida | apta_para_assinatura |
+| R11 | apta_para_assinatura E não ordenador_assinou | levar ao ordenador |
+| R12 | apta_para_assinatura E ordenador_assinou | pagamento_autorizado |
+| R13 | pagamento_autorizado E não nf_liquidada | enviar para liquidação |
+| R14 | pagamento_autorizado E nf_liquidada | arquivar no SPED |
+
+| Funcionamento do motor | Como é feito |
+|---|---|
+| **Resolução de conflito** | Quando várias regras podem disparar, vale a de maior `prioridade` (pendências = 50, fora do escopo = 100). Em caso de empate, vale a ordem da base |
+| **Parada** | O motor para quando nenhuma regra gera fato novo. Há também um limite de 100 ciclos, contra laços |
+| **Pendências** | Todas são reunidas numa única devolução, para o gestor corrigir tudo de uma vez |
+
+## 4. Como usar
+
+| Comando | O que faz |
+|---|---|
+| `python conformidade_nf.py demo` | Roda 6 casos + encadeamento para trás + busca |
+| `python conformidade_nf.py conferir` | Modo interativo (Enter = não sei, ? = por quê) |
+| `python conformidade_nf.py conferir caso_exemplo.json` | Confere um caso a partir de um arquivo JSON |
+| `python conformidade_nf.py conferir caso.json --perguntar` | Pergunta só o que faltar no JSON |
+| `python conformidade_nf.py consultar caso_exemplo.json --objetivo apta_para_assinatura` | Testa uma hipótese (encadeamento para trás) |
+| `python conformidade_nf.py buscar NE120_2026` | Busca um processo pelo padrão da NE |
+| `python conformidade_nf.py buscar NE78_2026 --empresa "Beta Manutencao"` | Se não achar a NE, busca pela empresa |
+| `python -m unittest -v` | Roda os 19 testes |
+
+## 5. Entregáveis da atividade (Aula 12)
+
+| Pedido | Onde está |
+|---|---|
+| Domínio e base de fatos e regras | Seções 1 a 3 deste README; `PRIMITIVOS` e `REGRAS` no código |
+| Duas inferências para frente | `demo`, casos 1 a 6 ("Rastro de inferência") |
+| Uma conclusão investigada para trás | `demo`, "ENCADEAMENTO PARA TRÁS", ou o comando `consultar` |
+| Situação que exige perguntar ao usuário | Modo `conferir` interativo, com a explicação "por quê?" |
+| Explicação ao usuário | Bloco "Como cheguei a essa conclusão" |
+| Testes positivo, negativo e informação ausente | `test_conformidade.py` (os três primeiros testes) |
+
+## 6. Como estender
+
+| Para acrescentar | O que fazer |
+|---|---|
+| **Nova regra** | Acrescente um `Regra(...)` em `REGRAS`. Se ela gerar uma pendência nova, registre também o motivo em `PENDENCIAS` |
+| **Novo dado de entrada** | Crie uma função `av_...`, registre-a em `PRIMITIVOS` e coloque a pergunta em `CAMPOS` |
+| **Certidões exigidas** | A lista `CERTIDOES_PADRAO` é só um exemplo: ajuste conforme o que a sua OM realmente exige. Um caso também pode trazer a própria lista em `certidoes_exigidas` |
+
+## 7. Limitações
+
+| Limitação | Detalhe |
+|---|---|
+| **Sem integração** | Não se conecta ao SIAFI, ao Trello nem ao SPED: os dados entram por JSON ou pelo terminal. A busca usa um arquivo de exemplo (`arquivo_sped.json`) |
+| **Escopo** | Não cobre empenho **estimativo** nem outras situações fora do fluxo descrito. Nesses casos, encaminha para análise humana |
+| **Responsabilidade** | É um apoio à conferência: a decisão continua sendo do conformador e do ordenador de despesas |
